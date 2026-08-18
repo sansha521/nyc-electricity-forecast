@@ -25,6 +25,19 @@ The repository has two halves:
 | Runtime storage | Postgres, typically Neon |
 | Python | 3.13 |
 
+## Tools and Technologies
+
+| Area | Tools |
+|---|---|
+| Language | Python 3.13 |
+| Data processing | pandas, NumPy |
+| Machine learning | LightGBM, scikit-learn, XGBoost |
+| Forecast features | EIA API, Visual Crossing Timeline API, Open-Meteo archive, NOAA / Central Park weather data, `holidays` |
+| Database | Postgres, typically hosted on Neon |
+| Automation | GitHub Actions scheduled workflow |
+| Testing | Python `unittest` |
+| Configuration | Environment variables loaded locally with `python-dotenv`; GitHub Actions secrets in CI |
+
 ## Forecasting Semantics
 
 The live job runs on target day `D` and predicts demand for that same date.
@@ -273,15 +286,7 @@ MAPE          = mean(abs_pct_error)
 bias          = mean(error)
 ```
 
-Example scored result from the first live evaluation:
-
-```text
-target_date = 2026-08-14
-predicted   = 172,982.71
-actual      = 176,757.00
-error       = -3,774.29
-APE         = 2.14%
-```
+Live prediction and score rows stay in Postgres and are not stored in this repo.
 
 ## GitHub Actions
 
