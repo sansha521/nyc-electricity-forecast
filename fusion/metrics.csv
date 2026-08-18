@@ -1,0 +1,55 @@
+mode_name, mae, rmse, mape, bias
+Ridge (alpha=16.77),6211,8486,4.37,-1085.9
+"RF (RandomForestRegressor(min_samples_leaf=2, n_estimators=500, n_jobs=-1,
+                      random_state=42))",6201,8851,4.22,-1802.3
+"RF (RandomForestRegressor(max_depth=20, min_samples_leaf=2, n_estimators=500,
+                      n_jobs=-1, random_state=42))",6199,8846,4.22,-1809.2
+"RF (RandomForestRegressor(min_samples_leaf=2, n_estimators=500, n_jobs=-1,
+                      random_state=42))",6192,8845,4.22,-1801.6
+Ridge (alpha=3.73) forecast_features_splits,2943,3939,2.08,-1121.9
+"RF (RandomForestRegressor(max_features=0.5, n_estimators=500, n_jobs=-1,
+                      random_state=42)) forecast_features_splits",3625,5183,2.47,-2223.4
+Ridge (alpha=1.21) simple_feature_splits,4522,5846,3.27,-1228.0
+"RF (RandomForestRegressor(max_depth=20, min_samples_leaf=2, n_estimators=500,
+                      n_jobs=-1, random_state=42)) simple_feature_splits",5268,6902,3.69,-2148.9
+"LGBM randomized_search_cv (LGBMRegressor(colsample_bytree=0.7, learning_rate=0.03, min_child_samples=5,
+              n_estimators=500, n_jobs=-1, num_leaves=15,
+              objective='regression', random_state=42, reg_alpha=0.5,
+              reg_lambda=0, subsample=0.8, subsample_freq=1, verbose=-1))",2987,4459,2.04,-1859.7
+"XGB randomized_search_cv (XGBRegressor(base_score=None, booster=None, callbacks=None,
+             colsample_bylevel=None, colsample_bynode=None,
+             colsample_bytree=0.8, device=None, early_stopping_rounds=None,
+             enable_categorical=True, eval_metric=None, feature_types=None,
+             feature_weights=None, gamma=0, grow_policy=None,
+             importance_type=None, interaction_constraints=None,
+             learning_rate=0.03, max_bin=None, max_cat_threshold=None,
+             max_cat_to_onehot=None, max_delta_step=None, max_depth=4,
+             max_leaves=None, min_child_weight=3, missing=nan,
+             monotone_constraints=None, multi_strategy=None, n_estimators=800,
+             n_jobs=None, num_parallel_tree=None, ...))",3013,4693,2.04,-1936.3
+"LGBM randomized_search_cv (LGBMRegressor(learning_rate=0.03, max_depth=4, min_child_samples=10,
+              n_estimators=800, n_jobs=-1, num_leaves=63,
+              objective='regression', random_state=42, reg_alpha=0.1,
+              reg_lambda=0, subsample=0.7, subsample_freq=1, verbose=-1))",4869,6472,3.42,-1840.8
+Ridge (alpha=5.43) inference_feature_splits,3229,4264,2.28,-1400.5
+"RF (RandomForestRegressor(max_features=0.5, n_estimators=500, n_jobs=-1,
+                      random_state=42))",3663,5211,2.5,-2242.3
+"XGB randomized_search_cv (XGBRegressor(base_score=None, booster=None, callbacks=None,
+             colsample_bylevel=None, colsample_bynode=None,
+             colsample_bytree=0.8, device=None, early_stopping_rounds=None,
+             enable_categorical=True, eval_metric=None, feature_types=None,
+             feature_weights=None, gamma=0, grow_policy=None,
+             importance_type=None, interaction_constraints=None,
+             learning_rate=0.03, max_bin=None, max_cat_threshold=None,
+             max_cat_to_onehot=None, max_delta_step=None, max_depth=4,
+             max_leaves=None, min_child_weight=3, missing=nan,
+             monotone_constraints=None, multi_strategy=None, n_estimators=800,
+             n_jobs=None, num_parallel_tree=None, ...))",3197,4810,2.18,-2026.2
+"LGBM randomized_search_cv (LGBMRegressor(colsample_bytree=0.8, learning_rate=0.03, max_depth=4,
+              min_child_samples=5, n_estimators=800, n_jobs=1,
+              objective='regression', random_state=42, reg_alpha=0.5,
+              reg_lambda=0.1, subsample=0.7, subsample_freq=1, verbose=-1))",3157,4644,2.16,-1944.4
+"LGBM randomized_search_cv (LGBMRegressor(colsample_bytree=0.8, learning_rate=0.03, max_depth=4,
+              min_child_samples=5, n_estimators=800, n_jobs=1,
+              objective='regression', random_state=42, reg_alpha=0.5,
+              reg_lambda=0.1, subsample=0.7, subsample_freq=1, verbose=-1))",3157,4644,2.16,-1944.4

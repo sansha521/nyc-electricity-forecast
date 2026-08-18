@@ -1,0 +1,33 @@
+# Pinned versions matching the current .venv (Python 3.13.1).
+#   python -m venv .venv
+#   .venv/Scripts/pip install -r requirements.txt      # Windows
+#   .venv/bin/pip install -r requirements.txt          # macOS / Linux
+#
+# pyproject.toml holds the flexible (>=) declaration of these same packages;
+# this file is the concrete, reproducible set. Direct dependencies only;
+# transitive ones are resolved by pip.
+
+# --- data wrangling ---
+pandas==3.0.5
+numpy==2.5.1
+holidays==0.101
+
+# --- data ingestion ---
+requests==2.34.2
+python-dotenv==1.2.2
+openmeteo-requests==1.7.5
+requests-cache==1.3.3
+retry-requests==2.0.0
+
+# --- models ---
+scikit-learn==1.9.0
+xgboost==3.3.0
+lightgbm==4.7.0
+
+# --- notebook / plotting (visualize_data.ipynb) ---
+matplotlib==3.11.1
+seaborn==0.13.2
+ipykernel==7.3.0
+
+# --- database ---
+psycopg[binary]==3.2.9
