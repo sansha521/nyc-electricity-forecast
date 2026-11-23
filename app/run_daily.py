@@ -3,6 +3,7 @@ import logging
 import sys
 from zoneinfo import ZoneInfo
 
+from app import pipeline_tasks as tasks
 from app.build_row_inference import DemandDataUnavailable, build_row
 from app.db import upsert_prediction
 from app.ingest_demand import ingest_recent_demand
@@ -18,53 +19,68 @@ def setup_logging() -> None:
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
 
-
-def run_daily() -> None:
-    target_date = dt.datetime.now(NY_TZ).date()
+def run_daily(target_date: dt.date | None = None) -> None:
+    target_date = target_date or tasks.default_target_date()
     logger.info("Starting daily inference for target_date=%s", target_date)
 
-    # EIA typically publishes yesterday's final daily demand today.
-    anchor_date = target_date - dt.timedelta(days=1)
-    start = anchor_date - dt.timedelta(days=35)
-    end = anchor_date
+    rows = tasks.ingest_latest_eia(target_date)
+    logger.info("Ingested EIA demand: rows=%d", rows)
 
-    logger.info("Step 1/4: ingesting demand")
-    ingest_recent_demand(start, end)
-    logger.info(
-        "Ingested EIA demand: start=%s end=%s",
-        start,
-        end,
-    )
+    if not tasks.validate_data_availability(target_date):
+        raise DemandDataUnavailable(
+            f"Demand data not available for {target_date}. "
+        )
+    
+    features = tasks.build_feature_row(target_date)
+    prediction = tasks.generate_and_store_forecast(target_date, features)
+    logger.info("Stored forecast: target_date=%s prediction=%.2f", target_date, prediction)
 
-    logger.info("Step 2/4: building inference row")
-    row = build_row(target_date)
-    logger.info(
-        "Feature row built: target_date=%s feature_count=%d",
-        target_date,
-        len(row.columns),
-    )
+# def run_daily() -> None:
+#     target_date = dt.datetime.now(NY_TZ).date()
+#     logger.info("Starting daily inference for target_date=%s", target_date)
 
-    logger.info("Step 3/4: generating prediction")
-    model = load_model()
-    prediction = predict(model, row)
-    logger.info(
-        "Prediction generated: target_date=%s prediction=%.2f",
-        target_date,
-        prediction,
-    )
+#     # EIA typically publishes yesterday's final daily demand today.
+#     anchor_date = target_date - dt.timedelta(days=1)
+#     start = anchor_date - dt.timedelta(days=35)
+#     end = anchor_date
 
-    logger.info("Step 4/4: saving prediction")
-    upsert_prediction(
-        target_date=target_date,
-        predicted_demand=prediction,
-        model_version="lgbm_v1",
-        features=row.iloc[0].to_dict(),
-    )
-    logger.info(
-        "Daily inference completed successfully: target_date=%s prediction=%.2f",
-        target_date,
-        prediction,
-    )
+#     logger.info("Step 1/4: ingesting demand")
+#     ingest_recent_demand(start, end)
+#     logger.info(
+#         "Ingested EIA demand: start=%s end=%s",
+#         start,
+#         end,
+#     )
+
+#     logger.info("Step 2/4: building inference row")
+#     row = build_row(target_date)
+#     logger.info(
+#         "Feature row built: target_date=%s feature_count=%d",
+#         target_date,
+#         len(row.columns),
+#     )
+
+#     logger.info("Step 3/4: generating prediction")
+#     model = load_model()
+#     prediction = predict(model, row)
+#     logger.info(
+#         "Prediction generated: target_date=%s prediction=%.2f",
+#         target_date,
+#         prediction,
+#     )
+
+#     logger.info("Step 4/4: saving prediction")
+#     upsert_prediction(
+#         target_date=target_date,
+#         predicted_demand=prediction,
+#         model_version="lgbm_v1",
+#         features=row.iloc[0].to_dict(),
+#     )
+#     logger.info(
+#         "Daily inference completed successfully: target_date=%s prediction=%.2f",
+#         target_date,
+#         prediction,
+#     )
 
 
 def main() -> int:

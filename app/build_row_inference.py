@@ -15,8 +15,6 @@ from app.ingest_demand import fetch_demand
 
 load_dotenv()
 
-VC_API_KEY = os.environ["VISUAL_CROSSING_API_KEY"]
-
 logger = logging.getLogger(__name__)
 
 
@@ -46,14 +44,15 @@ VC_ELEMENTS = (
 
 def _fetch_visual_crossing_days(start: dt.date, end: dt.date) -> pd.DataFrame:
     """Fetch daily Visual Crossing weather rows over an inclusive date range."""
+    api_key = os.environ["VISUAL_CROSSING_API_KEY"]
     url = (
         f"{BASE_URL}{urllib.parse.quote(LOCATION)}/{start}/{end}"
         f"?unitGroup=us"
         f"&contentType=json"
         f"&include=days"
         f"&elements={urllib.parse.quote(VC_ELEMENTS)}"
-        f"&key={VC_API_KEY}"
-    ) 
+        f"&key={api_key}"
+    )
     with urllib.request.urlopen(url, timeout=60) as r:
         payload = json.loads(r.read())
 
@@ -70,13 +69,14 @@ def _fetch_visual_crossing_days(start: dt.date, end: dt.date) -> pd.DataFrame:
 
 
 def fetch_target_forecast(target_date: dt.date) -> pd.Series:
+    api_key = os.environ["VISUAL_CROSSING_API_KEY"]
     url = (
         f"{BASE_URL}{urllib.parse.quote(LOCATION)}/{target_date}"
         f"?unitGroup=us"
         f"&contentType=json"
         f"&include=days"
         f"&elements={urllib.parse.quote(VC_ELEMENTS)}"
-        f"&key={VC_API_KEY}"
+        f"&key={api_key}"
     )
 
     with urllib.request.urlopen(url, timeout=60) as r:
@@ -220,10 +220,13 @@ def build_calendar_features(target_date: dt.date) -> dict:
 
 
 # def build_row(target_date: dt.date) -> pd.DataFrame:
-def build_row(*, demand: pd.Series | None = None) -> pd.DataFrame:
+def build_row(target_date: dt.date, *, demand: pd.Series | None = None) -> pd.DataFrame:
     """Build one inference row in the exact feature order expected by the model."""
-    recent_demand = fetch_recent_demand(target_date)
-    demand_feats = demand_features(recent_demand, target_date)
+    # recent_demand = fetch_recent_demand(target_date)
+    if demand is None:
+        demand = fetch_recent_demand(target_date)
+    
+    demand_feats = demand_features(demand, target_date)
 
     forecast_feats = fetch_target_forecast(target_date)
 

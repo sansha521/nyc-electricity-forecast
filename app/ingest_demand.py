@@ -35,12 +35,20 @@ def fetch_demand(
     response = requests.get(URL, params=params, timeout=timeout)
     response.raise_for_status()
 
-    df = pd.DataFrame(response.json()["response"]["data"])
+    # df = pd.DataFrame(response.json()["response"]["data"])
+    records = response.json()["response"]["data"]
+    if records == []:
+        return pd.DataFrame({
+            "date": pd.Series(dtype="datetime64[ns]"),
+            "demand": pd.Series(dtype="float64"),
+        })
+    
+    df = pd.DataFrame(records)
 
     df = df[df["timezone"] == "Eastern"].copy()
 
     df["period"] = pd.to_datetime(df["period"])
-    df["value"] = pd.to_numeric(df["value"])
+    df["value"] = pd.to_numeric(df["value"]).astype("float64")
 
     df = df[["period", "value"]].sort_values("period")
     df = df.rename(columns={"period": "date", "value": "demand"})

@@ -16,13 +16,11 @@ except ImportError:
 
 load_dotenv()
 
-DATABASE_URL = os.environ["DATABASE_URL"]
-
 
 def get_connection():
     if psycopg is None:
         raise RuntimeError("psycopg is required for database operations")
-    return psycopg.connect(DATABASE_URL)
+    return psycopg.connect(os.environ["DATABASE_URL"])
 
 
 def upsert_demand(
