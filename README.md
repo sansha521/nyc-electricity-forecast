@@ -371,6 +371,13 @@ VISUAL_CROSSING_API_KEY=...
 DATABASE_URL=postgresql://user:pass@host/db?sslmode=require
 ```
 
+For EIA API key, VC API key, go to:
+https://www.eia.gov/opendata/register.php
+https://www.visualcrossing.com/sign-up/
+
+For PostgreSQL Neon database, go to:
+https://console.neon.tech/
+
 Initialize Postgres:
 
 ```bash
@@ -381,6 +388,11 @@ On Windows, use your Postgres client equivalent, for example:
 
 ```powershell
 psql $env:DATABASE_URL -f app\db\schema.sql
+```
+
+Run tests:
+```bash
+python -m app.run_test
 ```
 
 Run the live job:

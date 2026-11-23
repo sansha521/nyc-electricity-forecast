@@ -219,7 +219,8 @@ def build_calendar_features(target_date: dt.date) -> dict:
     }
 
 
-def build_row(target_date: dt.date) -> pd.DataFrame:
+# def build_row(target_date: dt.date) -> pd.DataFrame:
+def build_row(*, demand: pd.Series | None = None) -> pd.DataFrame:
     """Build one inference row in the exact feature order expected by the model."""
     recent_demand = fetch_recent_demand(target_date)
     demand_feats = demand_features(recent_demand, target_date)
