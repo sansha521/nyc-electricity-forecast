@@ -391,8 +391,10 @@ psql $env:DATABASE_URL -f app\db\schema.sql
 ```
 
 Run tests:
+
 ```bash
-python -m app.run_test
+python -m app.run_tests
+python -m unittest discover -s tests/integration -v # Run integration tests
 ```
 
 Run the live job:
