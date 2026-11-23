@@ -8,11 +8,17 @@ from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 
+from sklearn.base import clone
 from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
 import lightgbm as lgb
 from lightgbm import LGBMRegressor
 from evaluate import metrics
 
+import mlflow
+import mlflow.lightgbm
+
+model_name = "nyc-electricity-lgbm"
+mlflow.set_experiment("nyc-electricity")
 
 # command input
 parser = argparse.ArgumentParser()
@@ -67,97 +73,159 @@ search = RandomizedSearchCV(
     verbose=1,
 )
 
-# Hyperparameter search on TRAIN only
-search.fit(X_train, y_train)
+with mlflow.start_run(run_name="lgbm_randomized_search_cv"):
 
-best_model = search.best_estimator_
-print("Best parameters:")
-print(search.best_params_)
+    # 1. Randomized hyperparameter search
+    search.fit(X_train, y_train)
+    best_model = search.best_estimator_
 
-# Evaluate on held-out validation set
-y_pred = best_model.predict(X_val)
+    # 2. Evaluate on held-out validation set
+    val_metrics = metrics(y_val, best_model.predict(X_val))
+    mlflow.log_params(search.best_params_)
+    mlflow.log_metrics({
+        "cv_mae": -search.best_score_,
+        **{f"val_{key}": float(value) for key, value in val_metrics.items()}
+    })
 
-val_metrics = metrics(y_val, y_pred)
+    # 3. Retrain winning model on TRAIN + VALIDATION
+    X_all = pd.concat([X_train, X_val], ignore_index=True)
+    y_all = pd.concat([y_train, y_val], ignore_index=True)
+    final_model = clone(best_model).fit(X_all, y_all)
+    booster = final_model.booster_
+
+    # 4. Log feature importance
+    importance = pd.DataFrame({
+        "feature": X_all.columns,
+        "gain_importance": booster.feature_importance(importance_type="gain"),
+    }).sort_values("gain_importance", ascending=False)
+    mlflow.log_table(importance, artifact_file="feature_importance.json")
+
+    # 5. Log the final model to MLflow
+    model_info = mlflow.lightgbm.log_model(
+        lgb_model=booster,
+        name="model",
+        registered_model_name=model_name,
+        metadata={"features": booster.feature_name()},
+    )
+
+    print(f"Registered model: models:/{model_name}/{model_info.registered_model_version}")
+
+
+# # Hyperparameter search on TRAIN only
+# search.fit(X_train, y_train)
+
+# best_model = search.best_estimator_
+
+# print("Best parameters:")
+# print(search.best_params_)
+
+# # Log best hyperparameters
+# mlflow.log_params(search.best_params_)
+
+# # Log best cross-validation MAE
+# mlflow.log_metric(
+#     "cv_mae",
+#     -search.best_score_
+# )
+
+# best_model = search.best_estimator_
+# print("Best parameters:")
+# print(search.best_params_)
+
+# # Evaluate on held-out validation set
+# y_pred = best_model.predict(X_val)
+
+# val_metrics = metrics(y_val, y_pred)
+
+# mlflow.log_metrics({
+#     f"val_{key}": float(value)
+#     for key, value in val_metrics.items()
+# })
 
 lgbm_metrics = {
-    "model": f"LGBM randomized_search_cv ({best_model})",
+    "model": f"LGBM randomized_search_cv ({booster})",
     **val_metrics,
 }
 print("Validation metrics:")
 print(lgbm_metrics)
 
-# lgbm_metrics = {"model": f"LGBM randomized_search_cv ({best_model})", **metrics(y_val, y_pred)}
-df = pd.DataFrame([lgbm_metrics])
+# # lgbm_metrics = {"model": f"LGBM randomized_search_cv ({best_model})", **metrics(y_val, y_pred)}
+# df = pd.DataFrame([lgbm_metrics])
 
-# Append to CSV. Disable header if file already exists. Drop default indices.
-df.to_csv(csv_file, mode="a", index=False, header=not Path(csv_file).exists())
+# # Append to CSV. Disable header if file already exists. Drop default indices.
+# df.to_csv(csv_file, mode="a", index=False, header=not Path(csv_file).exists())
 
 
-# Retrain winning model on TRAIN + VALIDATION
-X_all = pd.concat([X_train, X_val], ignore_index=True)
-y_all = pd.concat([y_train, y_val], ignore_index=True)
+# # Retrain winning model on TRAIN + VALIDATION
+# X_all = pd.concat([X_train, X_val], ignore_index=True)
+# y_all = pd.concat([y_train, y_val], ignore_index=True)
 
-final_model = LGBMRegressor(
-    objective="regression",
-    random_state=42,
-    n_jobs=1,
-    verbose=-1,
-    **search.best_params_,
-)
+# final_model = LGBMRegressor(
+#     objective="regression",
+#     random_state=42,
+#     n_jobs=1,
+#     verbose=-1,
+#     **search.best_params_,
+# )
 
-final_model.fit(X_all, y_all)
+# final_model.fit(X_all, y_all)
 
-# Feature importance from FINAL deployed model
-booster = final_model.booster_
+# mlflow.lightgbm.log_model(
+#     lgb_model=final_model,
+#     name="model"
+# )
 
-gain = booster.feature_importance(importance_type="gain")
+# # Feature importance from FINAL deployed model
+# booster = final_model.booster_
 
-importance = pd.DataFrame({
-    "feature": X_all.columns,
-    "gain_importance": gain,
-}).sort_values("gain_importance", ascending=False)
+# gain = booster.feature_importance(importance_type="gain")
 
-print("Feature importance:")
-print(importance)
+# importance = pd.DataFrame({
+#     "feature": X_all.columns,
+#     "gain_importance": gain,
+# }).sort_values("gain_importance", ascending=False)
+
+# print("Feature importance:")
+# print(importance)
 
 
 # Save model + metadata if --save was provided.
-if args.save:
-    model_path = args.save.with_suffix(".txt")
-    meta_path = args.save.with_suffix(".meta.json")
-    importance_path = args.save.with_suffix(".feature_importance.csv")
+# if args.save:
+#     model_path = args.save.with_suffix(".txt")
+#     meta_path = args.save.with_suffix(".meta.json")
+#     importance_path = args.save.with_suffix(".feature_importance.csv")
 
-    model_path.parent.mkdir(parents=True, exist_ok=True)
+#     model_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Save the underlying LightGBM booster.
-    final_model.booster_.save_model(str(model_path))
+#     # Save the underlying LightGBM booster.
+#     final_model.booster_.save_model(str(model_path))
 
-    metadata = {
-        "features": list(X_all.columns),
-        "lightgbm_version": lgb.__version__,
-        "training_date": datetime.now(timezone.utc).isoformat(),
-        "val_metrics": val_metrics,
-        "train_end": "2025-01-01",
-        "val_end": "2026-01-01",
-        "best_params": search.best_params_,
-        "final_fit_rows": len(X_all),
-    }
+#     metadata = {
+#         "features": list(X_all.columns),
+#         "lightgbm_version": lgb.__version__,
+#         "training_date": datetime.now(timezone.utc).isoformat(),
+#         "val_metrics": val_metrics,
+#         "train_end": "2025-01-01",
+#         "val_end": "2026-01-01",
+#         "best_params": search.best_params_,
+#         "final_fit_rows": len(X_all),
+#     }
 
-    meta_path.write_text(
-        json.dumps(metadata, indent=2),
-        encoding="utf-8",
-    )
+#     meta_path.write_text(
+#         json.dumps(metadata, indent=2),
+#         encoding="utf-8",
+#     )
 
-    # Save feature importance
-    importance.to_csv(
-        importance_path,
-        index=False,
-    )
+#     # Save feature importance
+#     importance.to_csv(
+#         importance_path,
+#         index=False,
+#     )
 
-    print(f"Saved model: {model_path}")
-    print(f"Saved metadata: {meta_path}")
-    print(f"Saved feature importance: {importance_path}")
+#     print(f"Saved model: {model_path}")
+#     print(f"Saved metadata: {meta_path}")
+#     print(f"Saved feature importance: {importance_path}")
 
-print(lgbm_metrics)
+# print(lgbm_metrics)
 
 

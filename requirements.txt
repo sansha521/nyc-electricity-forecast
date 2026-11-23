@@ -23,6 +23,7 @@ retry-requests==2.0.0
 scikit-learn==1.9.0
 xgboost==3.3.0
 lightgbm==4.7.0
+mlflow==3.18.0
 
 # --- notebook / plotting (visualize_data.ipynb) ---
 matplotlib==3.11.1
@@ -30,4 +31,5 @@ seaborn==0.13.2
 ipykernel==7.3.0
 
 # --- database ---
-psycopg[binary]==3.2.9
+# psycopg[binary]==3.2.9
+psycopg[binary]>=3.2.10
