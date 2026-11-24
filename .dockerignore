@@ -1,0 +1,55 @@
+# Version Control
+.git
+.gitignore
+.gitattributes
+.github
+.gitlab-ci.yml
+
+# Docker & Documentation
+Dockerfile*
+docker-compose*
+.dockerignore
+README.md
+LICENSE
+docs/
+
+# Secrets & Environment Variables
+.env
+.env.*
+*.pem
+*.key
+*.crt
+.aws/
+.ssh/
+
+# OS & Editor Files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs, Caches & Temp Files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+tmp/
+temp/
+.cache/
+coverage/
+.nyc_output/
+
+# Python specific
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
