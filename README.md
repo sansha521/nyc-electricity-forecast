@@ -427,6 +427,22 @@ Run tests:
 python -m unittest discover
 ```
 
+## API endpoint
+
+The following FastAPI endpoints are implemented:
+
+Run the API endpoint:
+
+```bash
+uvicorn api.main:app --reload
+```
+
+Then go to http://127.0.0.1:8000/health to check the API endpoint status. 
+
+Then go to http://127.0.0.1:8000/docs to try the API endpoints. 
+
+For the /forecasts endpoint, input the dates in "YYYY-MM-DD" format. 
+
 ## Bootstrap and Backfills
 
 `app/bootstrap.py` contains helper functions to populate:
