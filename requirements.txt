@@ -36,3 +36,8 @@ psycopg[binary]>=3.2.10
 
 # --- orchestration ---
 apache-airflow[standard]==3.4.0
+
+# --- api ---
+fastapi==0.165.0
+uvicorn==0.54.0
+pydantic==2.14.4
