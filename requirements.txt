@@ -33,3 +33,6 @@ ipykernel==7.3.0
 # --- database ---
 # psycopg[binary]==3.2.9
 psycopg[binary]>=3.2.10
+
+# --- orchestration ---
+apache-airflow[standard]==3.4.0

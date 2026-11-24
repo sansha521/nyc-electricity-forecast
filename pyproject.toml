@@ -31,6 +31,9 @@ dependencies = [
     # database
     # "psycopg[binary]>=3.2",
     "psycopg[binary]>=3.2.10",
+
+    # orchestration
+    "apache-airflow[standard]==3.4.0",
 ]
 
 [project.optional-dependencies]
