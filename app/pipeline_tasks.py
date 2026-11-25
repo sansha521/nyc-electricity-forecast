@@ -38,34 +38,22 @@ def nyiso_fallback_enabled() -> bool:
 
 
 def fetch_missing_anchor(target_date: dt.date) -> bool:
-    """Refresh yesterday's demand from EIA or the enabled NYISO fallback."""
+    """Refresh yesterday's demand from EIA."""
     from app.db import upsert_demand
-    from app.ingest_demand import fetch_demand, fetch_nyiso_demand
+    from app.ingest_demand import fetch_demand
 
     anchor = target_date - dt.timedelta(days=1)
     rows = fetch_demand(anchor, anchor)
     rows = rows[pd.to_datetime(rows["date"]).dt.date == anchor]
-    if not rows.empty:
-        for rec in rows.itertuples(index=False):
-            upsert_demand(date=anchor, demand=float(rec.demand), is_imputed=False)
-        return True
-
-    if not nyiso_fallback_enabled():
-        return False
-    demand = fetch_nyiso_demand(anchor)
-    if demand is None:
-        return False
-    upsert_demand(date=anchor, demand=demand, source="nyiso")
-    logger.info("Fetched NYISO Zone J demand: date=%s demand_mwh=%s", anchor, demand)
-    return True
+    for rec in rows.itertuples(index=False):
+        upsert_demand(date=anchor, demand=float(rec.demand), is_imputed=False)
+    return not rows.empty
 
 
-def load_demand_history(target_date: dt.date) -> pd.Series:
-    """Read the already-ingested demand instead of making a second EIA request."""
+def _read_demand_history(target_date: dt.date) -> pd.DataFrame:
     from app.db import get_connection
 
     anchor = target_date - dt.timedelta(days=1)
-    
     start = anchor - dt.timedelta(days=HISTORY_DAYS)
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -79,70 +67,70 @@ def load_demand_history(target_date: dt.date) -> pd.Series:
                 (start, anchor, nyiso_fallback_enabled()),
             )
             rows = cur.fetchall()
-    
+
     data = pd.DataFrame(rows, columns=["date", "demand", "is_imputed"])
     data["date"] = pd.to_datetime(data["date"]).dt.normalize()
-    data = data.set_index("date").sort_index()
+    return data.set_index("date").sort_index()
 
-    anchor_key = pd.Timestamp(anchor)
-    if anchor_key not in data.index or data.at[anchor_key, "is_imputed"]:
-        raise DemandDataUnavailable(f"Observed demand for {anchor} is not available")
 
-    demand = data["demand"].astype("float64")
+def _demand_gaps(data: pd.DataFrame, anchor: pd.Timestamp) -> pd.DataFrame:
     required_dates = [
-        anchor_key - pd.Timedelta(days=lag) for lag in (*range(31), 365, 366)
+        anchor - pd.Timedelta(days=lag) for lag in (*range(31), 365, 366)
     ]
-    required = demand.reindex(required_dates)
-    invalid_dates = required.index[~np.isfinite(required)]
-    if len(invalid_dates):
-        dates = invalid_dates.strftime("%Y-%m-%d").tolist()
-        raise ValueError(f"Missing or invalid EIA demand for {dates}")
+    required = data.reindex(required_dates)
+    missing = ~np.isfinite(required["demand"].astype("float64"))
+    if required["is_imputed"].eq(True).at[anchor]:
+        missing.at[anchor] = True
+    return required.loc[missing]
 
-    return demand
 
-    # data = pd.DataFrame(rows, columns=["date", "demand", "is_imputed"])
-    
-    # if data.empty:
-    #     raise DemandDataUnavailable("No demand rows in Postgres for inference")
-    
-    # data["date"] = pd.to_datetime(data["date"]).dt.normalize()
-    # data = data.set_index("date").sort_index()
-    
-    # required_dates = {
-    #     anchor - dt.timedelta(days=lag)
-    #     for lag in (0, 1, 2, 3, 7, 14, 21, 28, 365, 366)
-    # }
-    
-    # required_dates.update(anchor - dt.timedelta(days=lag) for lag in range(1, 31))
-    # missing = sorted(required_dates - set(data.index.date))
-    
-    # if missing:
-    #     raise DemandDataUnavailable(f"Missing EIA demand dates: {missing[:8]}")
-    
-    # # Never use an imputed anchor as the supposedly published D-1 actual.
-    # if bool(data.loc[pd.Timestamp(anchor), "is_imputed"]):
-    #     raise DemandDataUnavailable(f"EIA anchor {anchor} is still imputed")
-    
-    # if data.loc[pd.to_datetime(sorted(required_dates)), "demand"].isna().any():
-    #     raise DemandDataUnavailable("Required EIA demand values contain NULLs")
-    
-    # return data["demand"].astype(float)
+def _missing_demand_error(gaps: pd.DataFrame) -> ValueError:
+    dates = ", ".join(gaps.index.sort_values().strftime("%Y-%m-%d"))
+    return ValueError(f"Missing or invalid demand for required dates: {dates}")
+
+
+def load_demand_history(target_date: dt.date) -> pd.Series:
+    """Read and validate already-ingested demand from Postgres."""
+    data = _read_demand_history(target_date)
+    anchor = pd.Timestamp(target_date) - pd.Timedelta(days=1)
+    gaps = _demand_gaps(data, anchor)
+    if anchor in gaps.index:
+        raise DemandDataUnavailable(f"Observed demand for {anchor.date()} is not available")
+    if not gaps.empty:
+        raise _missing_demand_error(gaps)
+    return data["demand"].astype("float64")
 
 
 def validate_data_availability(target_date: dt.date) -> bool:
-    """Check Postgres first, then refresh a missing D-1 anchor.
+    """Recover required demand gaps and return False for a pending EIA-only anchor."""
+    from app.db import upsert_demand
+    from app.ingest_demand import fetch_nyiso_demand
 
-    Other historical gaps are surfaced as failures; a transient D-1 gap yields
-    False so the Airflow sensor reschedules instead of marking it successful.
-    """
-    try:
-        load_demand_history(target_date)
-        return True
-    except DemandDataUnavailable:
-        if not fetch_missing_anchor(target_date):
-            return False
-        load_demand_history(target_date)
-        return True
+    anchor = pd.Timestamp(target_date) - pd.Timedelta(days=1)
+    gaps = _demand_gaps(_read_demand_history(target_date), anchor)
+    if anchor in gaps.index and fetch_missing_anchor(target_date):
+        gaps = _demand_gaps(_read_demand_history(target_date), anchor)
+
+    if not gaps.empty and nyiso_fallback_enabled():
+        historical_imputed = gaps["is_imputed"].eq(True) & (gaps.index != anchor)
+        eligible = gaps.index[~historical_imputed]
+        for date in eligible:
+            day = date.date()
+            demand = fetch_nyiso_demand(day)
+            if demand is None:
+                continue
+            upsert_demand(
+                date=day, demand=demand, source="nyiso", replace_imputed=date == anchor,
+            )
+            logger.info("Fetched NYISO Zone J demand: date=%s demand_mwh=%s", day, demand)
+        if len(eligible):
+            gaps = _demand_gaps(_read_demand_history(target_date), anchor)
+    elif anchor in gaps.index:
+        return False
+
+    if not gaps.empty:
+        raise _missing_demand_error(gaps)
+    return True
 
 
 def build_feature_row(target_date: dt.date) -> dict[str, float]:

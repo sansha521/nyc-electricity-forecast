@@ -29,8 +29,9 @@ def upsert_demand(
     is_imputed=False,
     *,
     source="eia",
+    replace_imputed=True,
 ):
-    """Prefer EIA observations, then NYISO observations, then imputed demand."""
+    """Prefer finite EIA observations, then NYISO observations, then imputed demand."""
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -45,11 +46,18 @@ def upsert_demand(
                     is_imputed = EXCLUDED.is_imputed,
                     source = EXCLUDED.source,
                     updated_at = now()
-                WHERE demand_daily.is_imputed
-                   OR (NOT EXCLUDED.is_imputed
-                       AND (EXCLUDED.source = 'eia' OR demand_daily.source = 'nyiso'))
+                WHERE (demand_daily.is_imputed AND %s)
+                   OR (NOT demand_daily.is_imputed
+                       AND NOT EXCLUDED.is_imputed
+                       AND (EXCLUDED.source = 'eia'
+                            OR demand_daily.source = 'nyiso'
+                            OR demand_daily.demand IN (
+                                'NaN'::double precision,
+                                'Infinity'::double precision,
+                                '-Infinity'::double precision
+                            )))
                 """,
-                (date, demand, is_imputed, source),
+                (date, demand, is_imputed, source, replace_imputed),
             )
 
 

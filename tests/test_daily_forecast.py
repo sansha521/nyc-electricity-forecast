@@ -66,6 +66,7 @@ class BuildFeatureRowTests(unittest.TestCase):
 
 class DemandValidationTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(patch.dict(os.environ, {"ENABLE_NYISO_DEMAND_FALLBACK": "0"}))
         connect = self.enterContext(patch.object(db, "get_connection"))
         connection = connect.return_value.__enter__.return_value
         self.cursor = connection.cursor.return_value.__enter__.return_value
@@ -116,6 +117,19 @@ class DemandValidationTests(unittest.TestCase):
                 ]
                 with self.assertRaises(ValueError):
                     pipeline_tasks.load_demand_history(TARGET_DATE)
+
+    def test_invalid_historical_imputation_errors_without_fetching_nyiso(self):
+        self.enterContext(patch.dict(os.environ, {"ENABLE_NYISO_DEMAND_FALLBACK": "1"}))
+        annual_lag_date = self.history[-1][0]
+        self.cursor.fetchall.return_value = [
+            *self.history[:-1], (annual_lag_date, float("inf"), True),
+        ]
+
+        with patch("app.ingest_demand.fetch_nyiso_demand") as refresh:
+            with self.assertRaisesRegex(ValueError, annual_lag_date.isoformat()):
+                pipeline_tasks.validate_data_availability(TARGET_DATE)
+
+        refresh.assert_not_called()
 
 
 class RunDailyTests(unittest.TestCase):

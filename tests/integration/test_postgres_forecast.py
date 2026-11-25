@@ -5,7 +5,7 @@ import math
 import os
 from pathlib import Path
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -140,6 +140,27 @@ class PostgresForecastTests(unittest.TestCase):
         self.assertEqual(row, (125_500.0, "eia", False))
         self.assertEqual(actual, (125_500.0,))
 
+    def test_nyiso_fills_non_finite_observations_and_protects_imputed_history(self):
+        historical_date = ANCHOR_DATE - dt.timedelta(days=365)
+        db.upsert_demand(historical_date, 125_000.0, source="nyiso", replace_imputed=False)
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT demand, source, is_imputed FROM demand_daily WHERE date = %s",
+                (historical_date,),
+            ).fetchone()
+        self.assertEqual(row, (118_120.0, "eia", True))
+
+        for offset, invalid_demand in enumerate((float("nan"), float("inf"), float("-inf")), 1):
+            with self.subTest(demand=invalid_demand):
+                day = ANCHOR_DATE - dt.timedelta(days=offset)
+                db.upsert_demand(day, invalid_demand)
+                db.upsert_demand(day, 125_000.0, source="nyiso", replace_imputed=False)
+                with self.connect() as conn:
+                    row = conn.execute(
+                        "SELECT demand, source, is_imputed FROM demand_daily WHERE date = %s", (day,)
+                    ).fetchone()
+                self.assertEqual(row, (125_000.0, "nyiso", False))
+
     def test_forecast_rerun_and_revised_actual_update_existing_rows(self):
         run_daily.run_daily(TARGET_DATE)
         run_daily.run_daily(TARGET_DATE)
@@ -193,24 +214,43 @@ class PostgresForecastTests(unittest.TestCase):
         self.assertEqual(predictions, [(previous_target,)])
         self.assertEqual(scores, [(previous_target,)])
 
-    def test_nyiso_supplies_lag_zero_when_eia_has_not_published(self):
+    def test_nyiso_supplies_anchor_rolling_and_annual_demand(self):
         self.enterContext(patch.dict(os.environ, {"ENABLE_NYISO_DEMAND_FALLBACK": "1"}))
+        rolling_date = ANCHOR_DATE - dt.timedelta(days=5)
+        annual_date = ANCHOR_DATE - dt.timedelta(days=365)
         del self.demand[ANCHOR_DATE]
-        self.fetch_nyiso.return_value = 112_909.0
+        self.demand[rolling_date] = float("inf")
+        db.upsert_demand(rolling_date, float("nan"))
+        with self.connect() as conn:
+            conn.execute("DELETE FROM demand_daily WHERE date = %s", (annual_date,))
+        fallback = {ANCHOR_DATE: 112_909.0, rolling_date: 121_111.0, annual_date: 117_777.0}
+        self.fetch_nyiso.side_effect = fallback.get
 
         run_daily.run_daily(TARGET_DATE)
 
-        self.fetch_nyiso.assert_called_once_with(ANCHOR_DATE)
+        self.assertCountEqual(self.fetch_nyiso.call_args_list, [call(day) for day in fallback])
         with self.connect() as conn:
-            prediction = conn.execute(
-                "SELECT model_version, features FROM predictions WHERE target_date = %s", (TARGET_DATE,)
+            version, features = conn.execute(
+                "SELECT model_version, features FROM predictions WHERE target_date = %s",
+                (TARGET_DATE,),
             ).fetchone()
             demand = conn.execute(
-                "SELECT demand, source, is_imputed FROM demand_daily WHERE date = %s", (ANCHOR_DATE,)
-            ).fetchone()
-        self.assertEqual(prediction[0], "lgbm_v1")
-        self.assertEqual(prediction[1]["lag_0"], 112_909.0)
-        self.assertEqual(demand, (112_909.0, "nyiso", False))
+                "SELECT date, demand, source, is_imputed FROM demand_daily WHERE date = ANY(%s)",
+                (list(fallback),),
+            ).fetchall()
+
+        expected_demand = self.demand | fallback
+        rolling_30 = sum(
+            expected_demand[ANCHOR_DATE - dt.timedelta(days=lag)] for lag in range(1, 31)
+        ) / 30
+        self.assertEqual(version, "lgbm_v1")
+        self.assertEqual(features["lag_0"], fallback[ANCHOR_DATE])
+        self.assertEqual(features["rolling_30"], round(rolling_30, 1))
+        self.assertEqual(features["lag_365"], fallback[annual_date])
+        self.assertEqual(features["lag_366"], 128_613.0)
+        self.assertCountEqual(
+            demand, [(day, value, "nyiso", False) for day, value in fallback.items()],
+        )
 
     def test_forecast_uses_eia_when_available_with_fallback_enabled(self):
         self.enterContext(patch.dict(os.environ, {"ENABLE_NYISO_DEMAND_FALLBACK": "1"}))
@@ -219,15 +259,35 @@ class PostgresForecastTests(unittest.TestCase):
 
         self.fetch_nyiso.assert_not_called()
 
-    def test_forecast_retries_when_both_sources_are_pending(self):
+    def test_forecast_fails_on_unresolved_gaps_and_reuses_recovered_dates(self):
         self.enterContext(patch.dict(os.environ, {"ENABLE_NYISO_DEMAND_FALLBACK": "1"}))
+        recovered_date = ANCHOR_DATE - dt.timedelta(days=5)
+        missing_date = ANCHOR_DATE - dt.timedelta(days=7)
         del self.demand[ANCHOR_DATE]
-        self.fetch_nyiso.return_value = None
+        del self.demand[recovered_date]
+        del self.demand[missing_date]
+        fallback = {recovered_date: 120_500.0}
+        self.fetch_nyiso.side_effect = fallback.get
 
-        with patch("app.pipeline_tasks.default_target_date", return_value=TARGET_DATE):
-            self.assertEqual(run_daily.main(), 75)
-        self.fetch_nyiso.assert_called_once_with(ANCHOR_DATE)
+        with (
+            patch("app.pipeline_tasks.default_target_date", return_value=TARGET_DATE),
+            self.assertLogs("app.run_daily", level="ERROR") as logs,
+        ):
+            self.assertEqual(run_daily.main(), 1)
+
+        self.assertIn(f"{missing_date}, {ANCHOR_DATE}", logs.output[0])
+        self.assertCountEqual(
+            self.fetch_nyiso.call_args_list, [call(ANCHOR_DATE), call(recovered_date), call(missing_date)],
+        )
         self.weather.assert_not_called()
+        with self.connect() as conn:
+            prediction = conn.execute("SELECT target_date FROM predictions").fetchone()
+        self.assertIsNone(prediction)
+
+        self.fetch_nyiso.reset_mock()
+        fallback.update({ANCHOR_DATE: 112_909.0, missing_date: 123_000.0})
+        run_daily.run_daily(TARGET_DATE)
+        self.assertCountEqual(self.fetch_nyiso.call_args_list, [call(ANCHOR_DATE), call(missing_date)])
 
     def test_disabling_nyiso_ignores_its_previously_stored_anchor(self):
         del self.demand[ANCHOR_DATE]

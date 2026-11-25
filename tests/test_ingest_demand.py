@@ -77,6 +77,31 @@ class IngestDemandTests(unittest.TestCase):
             is_imputed=False,
         )
 
+    def test_ingest_skips_missing_and_non_finite_eia_values(self):
+        values = ["100", None, "NaN", "Infinity", "-Infinity", "invalid"]
+        end = START + dt.timedelta(days=len(values) - 1)
+        response = Mock(spec=Response)
+        response.json.return_value = {
+            "response": {
+                "data": [
+                    {
+                        "period": (START + dt.timedelta(days=offset)).isoformat(),
+                        "value": value,
+                        "timezone": "Eastern",
+                    }
+                    for offset, value in enumerate(values)
+                ]
+            }
+        }
+        self.get.return_value = response
+
+        df = ingest_recent_demand(START, end, api_key=API_KEY)
+
+        self.assertEqual(df["demand"].tolist(), [100.0])
+        self.upsert_demand.assert_called_once_with(
+            date=START, demand=100.0, is_imputed=False,
+        )
+
     def test_empty_eia_response_has_typed_columns_and_writes_no_rows(self):
         response = Mock(spec=Response)
         response.json.return_value = {"response": {"data": []}}

@@ -5,6 +5,7 @@ import math
 import os
 from zoneinfo import ZoneInfo
 
+import numpy as np
 import pandas as pd
 import requests
 
@@ -24,7 +25,7 @@ def fetch_demand(
     api_key: str | None = None,
     timeout: int = 60,
 ) -> pd.DataFrame:
-    """Fetch EIA Zone J daily demand and return Eastern-time rows."""
+    """Fetch finite EIA Zone J daily demand values in Eastern time."""
     api_key = api_key or os.environ["EIA_API_KEY"]
 
     params = {
@@ -55,9 +56,9 @@ def fetch_demand(
     df = df[df["timezone"] == "Eastern"].copy()
 
     df["period"] = pd.to_datetime(df["period"])
-    df["value"] = pd.to_numeric(df["value"]).astype("float64")
+    df["value"] = pd.to_numeric(df["value"], errors="coerce").astype("float64")
 
-    df = df[["period", "value"]].sort_values("period")
+    df = df.loc[np.isfinite(df["value"]), ["period", "value"]].sort_values("period")
     df = df.rename(columns={"period": "date", "value": "demand"})
 
     df = df.reset_index(drop=True)
