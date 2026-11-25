@@ -22,7 +22,7 @@ def demand_ready_sensor(**context) -> bool:
 
 @dag(
     dag_id="forecast",
-    schedule="30 17 * * *",  # 5:30 pm New York time, DST-aware
+    schedule="00 06 * * *",  # 6:00 am New York time, DST-aware
     start_date=pendulum.datetime(2026, 1, 1, tz=NY),
     catchup=False,
     max_active_runs=1,
@@ -60,7 +60,7 @@ def forecast_dag():
     )
     features = build(target)
     prediction = predict_and_save(target, features)
-    ingested >> ready >> features >> prediction
+    ingested >> ready >> features >> prediction # Task dependencies
 
 
 forecast_dag()
