@@ -18,6 +18,7 @@ with patch.dict(os.environ, {"PYTHON_DOTENV_DISABLED": "1"}):
 
 
 SCHEMA_FILE = Path(__file__).resolve().parents[2] / "app" / "db" / "schema.sql"
+DEMAND_SOURCE_MIGRATION = SCHEMA_FILE.parent / "migrations" / "001_demand_source.sql"
 TARGET_DATE = dt.date(2026, 11, 23)
 ANCHOR_DATE = TARGET_DATE - dt.timedelta(days=1)
 
@@ -37,7 +38,9 @@ class PostgresForecastTests(unittest.TestCase):
         self.enterContext(patch.dict(os.environ, {
             "EIA_API_KEY": "test-key",
             "VISUAL_CROSSING_API_KEY": "test-key",
+            "ENABLE_NYISO_DEMAND_FALLBACK": "0",
         }))
+        self.fetch_nyiso = self.enterContext(patch("app.ingest_demand.fetch_nyiso_demand"))
         self.enterContext(patch("app.ingest_demand.requests.get", side_effect=self.eia_response))
         self.weather = self.enterContext(patch(
             "app.build_row_inference.urllib.request.urlopen", side_effect=self.weather_response
@@ -92,6 +95,51 @@ class PostgresForecastTests(unittest.TestCase):
             ]
         return BytesIO(json.dumps({"days": days}).encode("utf-8"))
 
+    def test_demand_source_migration_preserves_existing_rows(self):
+        db.upsert_demand(ANCHOR_DATE, 122_000.0)
+        with self.connect() as conn:
+            conn.execute("ALTER TABLE demand_daily DROP COLUMN source")
+            expected = conn.execute(
+                "SELECT date, demand, is_imputed, updated_at FROM demand_daily ORDER BY date"
+            ).fetchall()
+            migration = DEMAND_SOURCE_MIGRATION.read_text(encoding="utf-8")
+            conn.execute(migration)
+            conn.execute(migration)
+            actual = conn.execute(
+                "SELECT date, demand, is_imputed, updated_at, source FROM demand_daily ORDER BY date"
+            ).fetchall()
+
+        self.assertEqual(actual, [(*row, "eia") for row in expected])
+
+    def test_eia_observations_replace_nyiso_and_enable_scoring(self):
+        db.upsert_prediction(TARGET_DATE, 129_000.0, "lgbm_v1", {})
+        db.upsert_demand(TARGET_DATE, 124_000.0, is_imputed=True)
+        db.upsert_demand(TARGET_DATE, 125_000.0, source="nyiso")
+        db.upsert_demand(TARGET_DATE, 123_000.0, is_imputed=True)
+
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT demand, source, is_imputed FROM demand_daily WHERE date = %s", (TARGET_DATE,)
+            ).fetchone()
+        self.assertEqual(row, (125_000.0, "nyiso", False))
+
+        evaluation_date = TARGET_DATE + dt.timedelta(days=1)
+        self.assertEqual(evaluate_predictions.run_evaluation(today=evaluation_date)["scored_count"], 0)
+
+        self.demand[TARGET_DATE] = 125_500.0
+        self.assertEqual(evaluate_predictions.run_evaluation(today=evaluation_date)["scored_count"], 1)
+        db.upsert_demand(TARGET_DATE, 125_000.0, source="nyiso")
+
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT demand, source, is_imputed FROM demand_daily WHERE date = %s", (TARGET_DATE,)
+            ).fetchone()
+            actual = conn.execute(
+                "SELECT actual_demand FROM prediction_scores WHERE target_date = %s", (TARGET_DATE,)
+            ).fetchone()
+        self.assertEqual(row, (125_500.0, "eia", False))
+        self.assertEqual(actual, (125_500.0,))
+
     def test_forecast_rerun_and_revised_actual_update_existing_rows(self):
         run_daily.run_daily(TARGET_DATE)
         run_daily.run_daily(TARGET_DATE)
@@ -144,3 +192,48 @@ class PostgresForecastTests(unittest.TestCase):
             scores = conn.execute("SELECT target_date FROM prediction_scores").fetchall()
         self.assertEqual(predictions, [(previous_target,)])
         self.assertEqual(scores, [(previous_target,)])
+
+    def test_nyiso_supplies_lag_zero_when_eia_has_not_published(self):
+        self.enterContext(patch.dict(os.environ, {"ENABLE_NYISO_DEMAND_FALLBACK": "1"}))
+        del self.demand[ANCHOR_DATE]
+        self.fetch_nyiso.return_value = 112_909.0
+
+        run_daily.run_daily(TARGET_DATE)
+
+        self.fetch_nyiso.assert_called_once_with(ANCHOR_DATE)
+        with self.connect() as conn:
+            prediction = conn.execute(
+                "SELECT model_version, features FROM predictions WHERE target_date = %s", (TARGET_DATE,)
+            ).fetchone()
+            demand = conn.execute(
+                "SELECT demand, source, is_imputed FROM demand_daily WHERE date = %s", (ANCHOR_DATE,)
+            ).fetchone()
+        self.assertEqual(prediction[0], "lgbm_v1")
+        self.assertEqual(prediction[1]["lag_0"], 112_909.0)
+        self.assertEqual(demand, (112_909.0, "nyiso", False))
+
+    def test_forecast_uses_eia_when_available_with_fallback_enabled(self):
+        self.enterContext(patch.dict(os.environ, {"ENABLE_NYISO_DEMAND_FALLBACK": "1"}))
+
+        run_daily.run_daily(TARGET_DATE)
+
+        self.fetch_nyiso.assert_not_called()
+
+    def test_forecast_retries_when_both_sources_are_pending(self):
+        self.enterContext(patch.dict(os.environ, {"ENABLE_NYISO_DEMAND_FALLBACK": "1"}))
+        del self.demand[ANCHOR_DATE]
+        self.fetch_nyiso.return_value = None
+
+        with patch("app.pipeline_tasks.default_target_date", return_value=TARGET_DATE):
+            self.assertEqual(run_daily.main(), 75)
+        self.fetch_nyiso.assert_called_once_with(ANCHOR_DATE)
+        self.weather.assert_not_called()
+
+    def test_disabling_nyiso_ignores_its_previously_stored_anchor(self):
+        del self.demand[ANCHOR_DATE]
+        db.upsert_demand(ANCHOR_DATE, 112_909.0, source="nyiso")
+
+        with patch("app.pipeline_tasks.default_target_date", return_value=TARGET_DATE):
+            self.assertEqual(run_daily.main(), 75)
+        self.fetch_nyiso.assert_not_called()
+        self.weather.assert_not_called()

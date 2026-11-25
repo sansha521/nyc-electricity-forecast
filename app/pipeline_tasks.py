@@ -5,6 +5,8 @@ No Airflow imports: these functions can be reused in local commands and tests.
 from __future__ import annotations
 
 import datetime as dt
+import logging
+import os
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -15,6 +17,7 @@ from app.build_row_inference import DemandDataUnavailable
 NY_TZ = ZoneInfo("America/New_York")
 HISTORY_DAYS = 400
 MODEL_VERSION = "lgbm_v1"
+logger = logging.getLogger(__name__)
 
 
 def default_target_date() -> dt.date:
@@ -30,18 +33,30 @@ def ingest_latest_eia(target_date: dt.date) -> int:
     return len(rows)
 
 
+def nyiso_fallback_enabled() -> bool:
+    return os.environ.get("ENABLE_NYISO_DEMAND_FALLBACK") == "1"
+
+
 def fetch_missing_anchor(target_date: dt.date) -> bool:
-    """Sensor poke: refresh yesterday's demand if EIA has now published it."""
+    """Refresh yesterday's demand from EIA or the enabled NYISO fallback."""
     from app.db import upsert_demand
-    from app.ingest_demand import fetch_demand
+    from app.ingest_demand import fetch_demand, fetch_nyiso_demand
 
     anchor = target_date - dt.timedelta(days=1)
     rows = fetch_demand(anchor, anchor)
     rows = rows[pd.to_datetime(rows["date"]).dt.date == anchor]
-    if rows.empty:
+    if not rows.empty:
+        for rec in rows.itertuples(index=False):
+            upsert_demand(date=anchor, demand=float(rec.demand), is_imputed=False)
+        return True
+
+    if not nyiso_fallback_enabled():
         return False
-    for rec in rows.itertuples(index=False):
-        upsert_demand(date=anchor, demand=float(rec.demand), is_imputed=False)
+    demand = fetch_nyiso_demand(anchor)
+    if demand is None:
+        return False
+    upsert_demand(date=anchor, demand=demand, source="nyiso")
+    logger.info("Fetched NYISO Zone J demand: date=%s demand_mwh=%s", anchor, demand)
     return True
 
 
@@ -55,9 +70,13 @@ def load_demand_history(target_date: dt.date) -> pd.Series:
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT date, demand, is_imputed FROM demand_daily "
-                "WHERE date BETWEEN %s AND %s ORDER BY date",
-                (start, anchor),
+                """
+                SELECT date, demand, is_imputed
+                FROM demand_daily
+                WHERE date BETWEEN %s AND %s AND (%s OR source = 'eia')
+                ORDER BY date
+                """,
+                (start, anchor, nyiso_fallback_enabled()),
             )
             rows = cur.fetchall()
     
@@ -67,7 +86,7 @@ def load_demand_history(target_date: dt.date) -> pd.Series:
 
     anchor_key = pd.Timestamp(anchor)
     if anchor_key not in data.index or data.at[anchor_key, "is_imputed"]:
-        raise DemandDataUnavailable(f"EIA demand for {anchor} has not been published")
+        raise DemandDataUnavailable(f"Observed demand for {anchor} is not available")
 
     demand = data["demand"].astype("float64")
     required_dates = [
@@ -111,7 +130,7 @@ def load_demand_history(target_date: dt.date) -> pd.Series:
 
 
 def validate_data_availability(target_date: dt.date) -> bool:
-    """Check Postgres first, then poke EIA for a missing D-1 anchor.
+    """Check Postgres first, then refresh a missing D-1 anchor.
 
     Other historical gaps are surfaced as failures; a transient D-1 gap yields
     False so the Airflow sensor reschedules instead of marking it successful.

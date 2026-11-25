@@ -3,6 +3,7 @@ CREATE TABLE demand_daily (
     date        DATE PRIMARY KEY,
     demand      DOUBLE PRECISION NOT NULL,
     is_imputed  BOOLEAN NOT NULL DEFAULT FALSE,
+    source      TEXT NOT NULL DEFAULT 'eia' CHECK (source IN ('eia', 'nyiso')),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

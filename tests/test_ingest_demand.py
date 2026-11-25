@@ -10,7 +10,7 @@ with patch.dict(os.environ, {
     "DATABASE_URL": "postgresql://test:test@localhost/test",
     "PYTHON_DOTENV_DISABLED": "1",
 }):
-    from app.ingest_demand import ingest_recent_demand
+    from app.ingest_demand import fetch_nyiso_demand, ingest_recent_demand
 
 
 START = dt.date(2026, 8, 15)
@@ -112,6 +112,84 @@ class IngestDemandTests(unittest.TestCase):
         self.get.assert_called_once()
         self.assertEqual(self.get.call_args.kwargs["timeout"], 5)
         self.upsert_demand.assert_not_called()
+
+
+class NyisoDemandTests(unittest.TestCase):
+    def setUp(self):
+        self.get = self.enterContext(patch("app.ingest_demand.requests.get"))
+        self.response = Mock(spec=Response, status_code=200)
+        self.get.return_value = self.response
+
+    def set_report(self, date_code, hours, loads):
+        columns = [
+            "Product_Name", "Posting_Type", "Balancing_Authority_Code", "Data_Type",
+            "Data_Code", "Data_Date", "UTC Offset", *(f"HR{i}" for i in range(1, 26)),
+        ]
+        rows = [
+            columns,
+            ["EIA-930", "Daily", "NYIS", "UTCD", "", date_code, "5", *hours],
+            ["EIA-930", "Daily", "NYIS", "D", "ZONJ", date_code, "5", *loads],
+            ["EIA-930", "Daily", "NYIS", "D", "ZONI", date_code, "5", *("999" for _ in hours)],
+        ]
+        self.response.content = "\n".join(",".join(row + [""] * (len(columns) - len(row))) for row in rows).encode()
+
+    def ending_hours(self, first, count):
+        timestamp = dt.datetime.fromisoformat(first)
+        return [(timestamp + dt.timedelta(hours=i)).strftime("%Y-%m-%dT%H:%M:%S.000Z") for i in range(count)]
+
+    def test_november_23_matches_eia_daily_total(self):
+        # Zone J hourly values from NYISO's November 24, 2026 EIA-930 posting.
+        loads = (
+            "4334 4174 4060 4002 4040 4247 4671 5118 5337 5428 5477 5544 "
+            "5618 5651 5710 5759 5915 5928 5709 5526 5356 5132 4847 4530"
+        ).split()
+        self.set_report("3272026", self.ending_hours("2026-11-23T06:00:00Z", 24), loads)
+
+        self.assertEqual(fetch_nyiso_demand(dt.date(2026, 11, 23)), 122_113.0)
+        self.get.assert_called_once_with(
+            "https://mis.nyiso.com/public/csv/eiadaily/NYISdaily3282026.csv", timeout=15,
+        )
+
+    def test_accepts_clock_change_days_and_uses_next_days_year_in_url(self):
+        cases = (
+            (dt.date(2026, 3, 8), "0672026", "2026-03-08T06:00:00Z", 23, "0682026"),
+            (dt.date(2026, 11, 1), "3052026", "2026-11-01T05:00:00Z", 25, "3062026"),
+            (dt.date(2026, 12, 31), "3652026", "2026-12-31T06:00:00Z", 24, "0012027"),
+        )
+        for anchor, date_code, first, count, publication_code in cases:
+            with self.subTest(anchor=anchor):
+                self.set_report(date_code, self.ending_hours(first, count), ["100"] * count)
+                self.assertEqual(fetch_nyiso_demand(anchor), 100 * count)
+                self.assertTrue(self.get.call_args.args[0].endswith(f"NYISdaily{publication_code}.csv"))
+
+    def test_missing_or_incomplete_report_is_pending(self):
+        anchor = dt.date(2026, 11, 23)
+        self.response.status_code = 404
+        self.assertIsNone(fetch_nyiso_demand(anchor))
+
+        self.response.status_code = 200
+        hours = self.ending_hours("2026-11-23T06:00:00Z", 24)
+        self.set_report("3262026", hours, ["100"] * 24)
+        self.assertIsNone(fetch_nyiso_demand(anchor))
+
+        incomplete_loads = ["100"] * 24
+        incomplete_loads[10] = ""
+        self.set_report("3272026", hours, incomplete_loads)
+        self.assertIsNone(fetch_nyiso_demand(anchor))
+
+    def test_rejects_invalid_loads_and_wrong_hour_boundaries(self):
+        anchor = dt.date(2026, 11, 23)
+        hours = self.ending_hours("2026-11-23T06:00:00Z", 24)
+        for bad_value in ("NaN", "inf", "invalid"):
+            with self.subTest(bad_value=bad_value):
+                self.set_report("3272026", hours, [bad_value, *(["100"] * 23)])
+                with self.assertRaises(ValueError):
+                    fetch_nyiso_demand(anchor)
+
+        hours[7] = hours[6]
+        self.set_report("3272026", hours, ["100"] * 24)
+        with self.assertRaisesRegex(ValueError, "Invalid NYISO hourly data"):
+            fetch_nyiso_demand(anchor)
 
 
 if __name__ == "__main__":

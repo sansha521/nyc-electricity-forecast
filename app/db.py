@@ -27,22 +27,29 @@ def upsert_demand(
     date,
     demand,
     is_imputed=False,
+    *,
+    source="eia",
 ):
+    """Prefer EIA observations, then NYISO observations, then imputed demand."""
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO demand_daily
-                    (date, demand, is_imputed)
+                    (date, demand, is_imputed, source)
                 VALUES
-                    (%s, %s, %s)
+                    (%s, %s, %s, %s)
                 ON CONFLICT (date)
                 DO UPDATE SET
                     demand = EXCLUDED.demand,
                     is_imputed = EXCLUDED.is_imputed,
+                    source = EXCLUDED.source,
                     updated_at = now()
+                WHERE demand_daily.is_imputed
+                   OR (NOT EXCLUDED.is_imputed
+                       AND (EXCLUDED.source = 'eia' OR demand_daily.source = 'nyiso'))
                 """,
-                (date, demand, is_imputed),
+                (date, demand, is_imputed, source),
             )
 
 
@@ -150,7 +157,7 @@ def load_prediction_actuals(start, end):
                 d.is_imputed
             FROM predictions p
             JOIN demand_daily d
-                ON d.date = p.target_date
+                ON d.date = p.target_date AND d.source = 'eia'
             WHERE p.target_date BETWEEN %s AND %s
             ORDER BY p.target_date
             """,

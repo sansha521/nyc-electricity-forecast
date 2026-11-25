@@ -14,6 +14,7 @@ jobs:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       EIA_API_KEY: ${{ secrets.EIA_API_KEY }}
       VISUAL_CROSSING_API_KEY: ${{ secrets.VISUAL_CROSSING_API_KEY }}
+      ENABLE_NYISO_DEMAND_FALLBACK: ${{ vars.ENABLE_NYISO_DEMAND_FALLBACK }}
 
     steps:
       - name: Checkout repository
