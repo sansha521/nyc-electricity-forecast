@@ -1,6 +1,7 @@
 import csv
 import datetime as dt
 import io
+import logging
 import math
 import os
 from zoneinfo import ZoneInfo
@@ -16,6 +17,7 @@ PAGE_SIZE = 5000
 NYISO_DAILY_URL = "https://mis.nyiso.com/public/csv/eiadaily/NYISdaily{date:%j%Y}.csv"
 NYISO_HOUR_COLUMNS = tuple(f"HR{hour}" for hour in range(1, 26))
 NY_TZ = ZoneInfo("America/New_York")
+logger = logging.getLogger(__name__)
 
 
 def fetch_demand(
@@ -128,6 +130,7 @@ def ingest_recent_demand(
     timeout: int = 60,
 ) -> pd.DataFrame:
     """Fetch recent EIA demand rows and upsert Eastern-time values."""
+    logger.info("Fetching EIA demand: start=%s end=%s", start, end)
     df = fetch_demand(
         start=start,
         end=end,
@@ -135,6 +138,7 @@ def ingest_recent_demand(
         api_key=api_key,
         timeout=timeout,
     )
+    logger.info("Fetched EIA demand: rows=%d", len(df))
 
     for record in df.itertuples(index=False):
         upsert_demand(

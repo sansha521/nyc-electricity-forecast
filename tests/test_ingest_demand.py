@@ -49,7 +49,17 @@ class IngestDemandTests(unittest.TestCase):
 
         self.get.return_value = response
 
-        df = ingest_recent_demand(START, END, api_key=API_KEY)
+        with self.assertLogs("app.ingest_demand", level="INFO") as logs:
+            def assert_fetched_before_write(**_):
+                self.assertEqual(logs.records[-1].getMessage(), "Fetched EIA demand: rows=2")
+
+            self.upsert_demand.side_effect = assert_fetched_before_write
+            df = ingest_recent_demand(START, END, api_key=API_KEY)
+
+        self.assertEqual([record.getMessage() for record in logs.records], [
+            f"Fetching EIA demand: start={START} end={END}",
+            "Fetched EIA demand: rows=2",
+        ])
 
         self.get.assert_called_once()
         request = self.get.call_args
@@ -131,9 +141,12 @@ class IngestDemandTests(unittest.TestCase):
     def test_eia_timeout_propagates_without_writing_demand(self):
         self.get.side_effect = Timeout("EIA request timed out")
 
-        with self.assertRaises(Timeout):
+        with self.assertLogs("app.ingest_demand", level="INFO") as logs, self.assertRaises(Timeout):
             ingest_recent_demand(START, END, api_key=API_KEY, timeout=5)
 
+        self.assertEqual([record.getMessage() for record in logs.records], [
+            f"Fetching EIA demand: start={START} end={END}",
+        ])
         self.get.assert_called_once()
         self.assertEqual(self.get.call_args.kwargs["timeout"], 5)
         self.upsert_demand.assert_not_called()

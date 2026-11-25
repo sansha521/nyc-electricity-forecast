@@ -1,6 +1,7 @@
 import datetime as dt
 import logging
 import sys
+from time import perf_counter
 from zoneinfo import ZoneInfo
 
 from app import pipeline_tasks as tasks
@@ -23,17 +24,31 @@ def run_daily(target_date: dt.date | None = None) -> None:
     target_date = target_date or tasks.default_target_date()
     logger.info("Starting daily inference for target_date=%s", target_date)
 
+    started_at = perf_counter()
     rows = tasks.ingest_latest_eia(target_date)
-    logger.info("Ingested EIA demand: rows=%d", rows)
+    logger.info("Ingested EIA demand: rows=%d elapsed_s=%.2f", rows, perf_counter() - started_at)
 
     if not tasks.validate_data_availability(target_date):
         raise DemandDataUnavailable(
             f"Demand data not available for {target_date}. "
         )
-    
+
+    logger.info("Building inference features: target_date=%s", target_date)
+    started_at = perf_counter()
     features = tasks.build_feature_row(target_date)
+    logger.info(
+        "Feature row built: target_date=%s feature_count=%d elapsed_s=%.2f",
+        target_date, len(features), perf_counter() - started_at,
+    )
+
+    model_version = tasks.MODEL_VERSION
+    logger.info("Generating forecast: target_date=%s model_version=%s", target_date, model_version)
+    started_at = perf_counter()
     prediction = tasks.generate_and_store_forecast(target_date, features)
-    logger.info("Stored forecast: target_date=%s prediction=%.2f", target_date, prediction)
+    logger.info(
+        "Stored forecast: target_date=%s prediction=%.2f unit=MWh model_version=%s elapsed_s=%.2f",
+        target_date, prediction, model_version, perf_counter() - started_at,
+    )
 
 # def run_daily() -> None:
 #     target_date = dt.datetime.now(NY_TZ).date()

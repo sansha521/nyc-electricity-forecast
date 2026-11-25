@@ -107,15 +107,23 @@ def validate_data_availability(target_date: dt.date) -> bool:
     from app.ingest_demand import fetch_nyiso_demand
 
     anchor = pd.Timestamp(target_date) - pd.Timedelta(days=1)
+    fallback_enabled = nyiso_fallback_enabled()
+    logger.info(
+        "Validating demand history: anchor_date=%s nyiso_fallback_enabled=%s",
+        anchor.date(), fallback_enabled,
+    )
     gaps = _demand_gaps(_read_demand_history(target_date), anchor)
-    if anchor in gaps.index and fetch_missing_anchor(target_date):
-        gaps = _demand_gaps(_read_demand_history(target_date), anchor)
+    if anchor in gaps.index:
+        logger.info("Refreshing EIA demand: anchor_date=%s", anchor.date())
+        if fetch_missing_anchor(target_date):
+            gaps = _demand_gaps(_read_demand_history(target_date), anchor)
 
-    if not gaps.empty and nyiso_fallback_enabled():
+    if not gaps.empty and fallback_enabled:
         historical_imputed = gaps["is_imputed"].eq(True) & (gaps.index != anchor)
         eligible = gaps.index[~historical_imputed]
         for date in eligible:
             day = date.date()
+            logger.info("Fetching NYISO fallback demand: date=%s", day)
             demand = fetch_nyiso_demand(day)
             if demand is None:
                 continue
@@ -153,6 +161,7 @@ def generate_and_store_forecast(target_date: dt.date, features: dict[str, float]
         raise ValueError("Prediction feature schema is incomplete or contains NaN")
     model = load_model()
     forecast = float(predict(model, row))
+    logger.info("Saving forecast to Postgres: target_date=%s", target_date)
     upsert_prediction(
         target_date=target_date,
         predicted_demand=forecast,

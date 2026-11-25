@@ -88,11 +88,16 @@ class DemandValidationTests(unittest.TestCase):
         ):
             with self.subTest(anchor=state):
                 self.cursor.fetchall.return_value = rows
-                with patch.object(
-                    pipeline_tasks, "fetch_missing_anchor", return_value=False
-                ) as refresh:
+                with (
+                    patch.object(pipeline_tasks, "fetch_missing_anchor", return_value=False) as refresh,
+                    self.assertLogs("app.pipeline_tasks", level="INFO") as logs,
+                ):
                     self.assertFalse(pipeline_tasks.validate_data_availability(TARGET_DATE))
                 refresh.assert_called_once_with(TARGET_DATE)
+                self.assertEqual([record.getMessage() for record in logs.records], [
+                    f"Validating demand history: anchor_date={ANCHOR_DATE} nyiso_fallback_enabled=False",
+                    f"Refreshing EIA demand: anchor_date={ANCHOR_DATE}",
+                ])
 
     def test_rechecks_history_after_anchor_is_published(self):
         self.cursor.fetchall.side_effect = [self.history[1:], self.history]
@@ -131,14 +136,33 @@ class DemandValidationTests(unittest.TestCase):
 
         refresh.assert_not_called()
 
+    def test_logs_nyiso_fallback_after_eia_anchor_refresh(self):
+        self.cursor.fetchall.side_effect = [self.history[1:], self.history]
+        with (
+            patch.dict(os.environ, {"ENABLE_NYISO_DEMAND_FALLBACK": "1"}),
+            patch.object(pipeline_tasks, "fetch_missing_anchor", return_value=False),
+            patch("app.ingest_demand.fetch_nyiso_demand", return_value=99_000.0) as fetch_nyiso,
+            patch.object(db, "upsert_demand"),
+            self.assertLogs("app.pipeline_tasks", level="INFO") as logs,
+        ):
+            self.assertTrue(pipeline_tasks.validate_data_availability(TARGET_DATE))
+
+        fetch_nyiso.assert_called_once_with(ANCHOR_DATE)
+        self.assertEqual([record.getMessage() for record in logs.records], [
+            f"Validating demand history: anchor_date={ANCHOR_DATE} nyiso_fallback_enabled=True",
+            f"Refreshing EIA demand: anchor_date={ANCHOR_DATE}",
+            f"Fetching NYISO fallback demand: date={ANCHOR_DATE}",
+            f"Fetched NYISO Zone J demand: date={ANCHOR_DATE} demand_mwh=99000.0",
+        ])
+
 
 class RunDailyTests(unittest.TestCase):
     def setUp(self):
         self.tasks = self.enterContext(patch.object(run_daily, "tasks", autospec=True))
         self.enterContext(patch.object(run_daily, "setup_logging"))
-        self.enterContext(patch.object(run_daily, "logger"))
         self.tasks.default_target_date.return_value = TARGET_DATE
         self.tasks.ingest_latest_eia.return_value = 33
+        self.tasks.MODEL_VERSION = pipeline_tasks.MODEL_VERSION
 
     def test_success_runs_stages_in_order_and_returns_zero(self):
         features = {"lag_0": 100_000.0}
@@ -146,7 +170,21 @@ class RunDailyTests(unittest.TestCase):
         self.tasks.build_feature_row.return_value = features
         self.tasks.generate_and_store_forecast.return_value = 99_000.0
 
-        self.assertEqual(run_daily.main(), 0)
+        with (
+            patch.object(run_daily, "perf_counter", side_effect=[10.0, 12.5, 20.0, 23.0, 30.0, 31.0]),
+            self.assertLogs("app.run_daily", level="INFO") as logs,
+        ):
+            self.assertEqual(run_daily.main(), 0)
+
+        self.assertEqual([record.getMessage() for record in logs.records], [
+            f"Starting daily inference for target_date={TARGET_DATE}",
+            "Ingested EIA demand: rows=33 elapsed_s=2.50",
+            f"Building inference features: target_date={TARGET_DATE}",
+            f"Feature row built: target_date={TARGET_DATE} feature_count=1 elapsed_s=3.00",
+            f"Generating forecast: target_date={TARGET_DATE} model_version={pipeline_tasks.MODEL_VERSION}",
+            f"Stored forecast: target_date={TARGET_DATE} prediction=99000.00 unit=MWh "
+            f"model_version={pipeline_tasks.MODEL_VERSION} elapsed_s=1.00",
+        ])
         self.assertEqual(self.tasks.method_calls, [
             call.default_target_date(),
             call.ingest_latest_eia(TARGET_DATE),
@@ -158,14 +196,44 @@ class RunDailyTests(unittest.TestCase):
     def test_unpublished_anchor_returns_75_without_building_or_saving(self):
         self.tasks.validate_data_availability.return_value = False
 
-        self.assertEqual(run_daily.main(), 75)
+        with self.assertLogs("app.run_daily", level="INFO") as logs:
+            self.assertEqual(run_daily.main(), 75)
+
+        self.assertEqual(len(logs.records), 3)
+        self.assertEqual(logs.records[-1].levelname, "WARNING")
+        self.assertIn("Daily inference delayed", logs.records[-1].getMessage())
         self.tasks.build_feature_row.assert_not_called()
         self.tasks.generate_and_store_forecast.assert_not_called()
+
+    def test_forecast_write_failure_logs_error_without_storage_confirmation(self):
+        self.tasks.validate_data_availability.return_value = True
+        self.tasks.build_feature_row.return_value = dict.fromkeys(build_row_inference.FEATURES, 1.0)
+        self.tasks.generate_and_store_forecast.side_effect = pipeline_tasks.generate_and_store_forecast
+        error = RuntimeError("Postgres unavailable")
+        with (
+            patch("app.predict.load_model"),
+            patch("app.predict.predict", return_value=99_000.0),
+            patch.object(db, "upsert_prediction", side_effect=error) as store,
+            self.assertLogs("app", level="INFO") as logs,
+        ):
+            self.assertEqual(run_daily.main(), 1)
+
+        store.assert_called_once()
+        messages = [record.getMessage() for record in logs.records]
+        self.assertEqual(messages[-2:], [
+            f"Saving forecast to Postgres: target_date={TARGET_DATE}",
+            "Daily inference failed",
+        ])
+        self.assertFalse(any(message.startswith("Stored forecast") for message in messages))
+        self.assertIs(logs.records[-1].exc_info[1], error)
 
     def test_historical_data_error_returns_one_without_building_or_saving(self):
         self.tasks.validate_data_availability.side_effect = ValueError("Missing annual lag")
 
-        self.assertEqual(run_daily.main(), 1)
+        with self.assertLogs("app.run_daily", level="ERROR") as logs:
+            self.assertEqual(run_daily.main(), 1)
+
+        self.assertIsInstance(logs.records[0].exc_info[1], ValueError)
         self.tasks.build_feature_row.assert_not_called()
         self.tasks.generate_and_store_forecast.assert_not_called()
 
